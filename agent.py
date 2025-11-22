@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -15,6 +16,9 @@ import requests
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from lakera import LakeraAgent, LakeraAgentError
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,7 +66,10 @@ class TranscriptLogger:
 class GandalfAutoAgent:
     """Coordinates Lakera, the prompt template, OpenRouter, and transcript logging."""
 
-    TAG_PATTERN = re.compile(r"<(prompt|password)>(.*?)</\\1>", re.IGNORECASE | re.DOTALL)
+    TAG_PATTERN = re.compile(
+        r"<(?P<tag>prompt|password)>(?P<body>.*?)</(?P=tag)>",
+        re.IGNORECASE | re.DOTALL,
+    )
 
     def __init__(
         self,
@@ -102,16 +109,23 @@ class GandalfAutoAgent:
             self._http.headers["X-Title"] = title_header
 
     def run(self, *, max_rounds: int = 10) -> None:
+        LOG.info("Starting GandalfAutoAgent run; max_rounds=%d", max_rounds)
         with LakeraAgent(**self._lakera_kwargs) as lakera:
+            LOG.debug("Fetching level description via Lakera")
             description = lakera.describe_level(purpose="auto_agent:describe")
+            LOG.debug("Level description length=%d", len(description))
             self._logger.log("level_description", description=description)
             for round_idx in range(1, max_rounds + 1):
+                LOG.info("Round %d/%d", round_idx, max_rounds)
                 llm_prompt = self._renderer.render(description=description, turns=self._turns, guidance=self._guidance)
+                LOG.debug("Rendered template characters=%d", len(llm_prompt))
                 self._logger.log("llm_prompt", round=round_idx, prompt=llm_prompt)
                 llm_response = self._call_openrouter(llm_prompt)
+                LOG.debug("OpenRouter response length=%d", len(llm_response))
                 self._logger.log("llm_response", round=round_idx, response=llm_response)
                 actions = self._extract_actions(llm_response)
                 if not actions:
+                    LOG.warning("Round %d produced no actionable XML tags", round_idx)
                     self._logger.log("no_actions", round=round_idx, response=llm_response)
                     break
                 for action in actions:
@@ -119,7 +133,9 @@ class GandalfAutoAgent:
                         self._handle_prompt_action(lakera, action.content, round_idx)
                     elif action.tag == "password":
                         if self._handle_password_action(lakera, action.content, round_idx):
+                            LOG.info("Password accepted; exiting loop")
                             return
+            LOG.info("Run finished without password success")
             self._logger.log("run_complete", rounds=len(self._turns))
 
     def _call_openrouter(self, prompt: str) -> str:
@@ -135,6 +151,7 @@ class GandalfAutoAgent:
                 {"role": "user", "content": prompt},
             ],
         }
+        LOG.debug("Calling OpenRouter model=%s", self._openrouter_model)
         response = self._http.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
@@ -153,15 +170,19 @@ class GandalfAutoAgent:
         return content
 
     def _extract_actions(self, llm_response: str) -> List[ParsedAction]:
-        matches = self.TAG_PATTERN.findall(llm_response)
         actions: List[ParsedAction] = []
-        for tag, body in matches:
-            text = body.strip()
-            if text:
-                actions.append(ParsedAction(tag=tag.lower(), content=text))
+        for match in self.TAG_PATTERN.finditer(llm_response):
+            tag = match.group("tag").lower()
+            body = match.group("body").strip()
+            if body:
+                actions.append(ParsedAction(tag=tag, content=body))
+        if not actions:
+            snippet = llm_response[:200].replace("\n", " ")
+            LOG.debug("No XML tags found in response snippet=%r", snippet)
         return actions
 
     def _handle_prompt_action(self, lakera: LakeraAgent, prompt: str, round_idx: int) -> None:
+        LOG.info("Submitting prompt to Lakera (round %d)", round_idx)
         try:
             response = lakera.submit_prompt(prompt, purpose=f"auto_agent:round{round_idx}:prompt")
         except LakeraAgentError as exc:
@@ -172,6 +193,7 @@ class GandalfAutoAgent:
         self._append_turn("lakera", response)
 
     def _handle_password_action(self, lakera: LakeraAgent, password: str, round_idx: int) -> bool:
+        LOG.info("Submitting password attempt to Lakera (round %d)", round_idx)
         try:
             response = lakera.submit_password(password, purpose=f"auto_agent:round{round_idx}:password")
         except LakeraAgentError as exc:
@@ -223,11 +245,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history-limit", type=int, default=20, help="Max number of turns to feed back into the template")
     parser.add_argument("--max-rounds", type=int, default=10, help="Maximum LLM-Lakera cycles to execute")
     parser.add_argument("--http-timeout", type=float, default=60.0, help="Timeout for OpenRouter requests in seconds")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose console logging for troubleshooting")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     lakera_kwargs = {
         "cookie_jar": args.cookie_jar,
         "headless": args.headless,
