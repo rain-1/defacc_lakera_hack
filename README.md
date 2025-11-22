@@ -3,3 +3,19 @@
 ## Usage
 - Run `password_probe.py --password <guess>` to submit a password via Selenium.
 - On a correct guess, `LakeraAgent` now clicks the in-page "Next Level" button, records the resulting URL, and prints it so you can jump directly to the next challenge.
+
+## Setup
+1. Ensure Python 3.11+ is installed.
+2. Create a virtual environment (once per clone):
+	```bash
+	python3 -m venv .venv
+	```
+3. Activate it:
+	```bash
+	source .venv/bin/activate
+	```
+4. Install dependencies:
+	```bash
+	pip install -r requirements.txt
+	```
+5. Run the probes (e.g. `python password_probe.py --password COCOLOCO`).
