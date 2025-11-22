@@ -29,16 +29,21 @@ def parse_args() -> argparse.Namespace:
         dest="prompts",
         help="Prompt to send. Provide multiple --prompt entries for multiple prompts.",
     )
+    parser.add_argument(
+        "--purpose",
+        default="prompt_attack",
+        help="Label recorded in the JSONL log for these interactions.",
+    )
     return parser.parse_args()
 
 
-def run_prompts(prompts: List[str], cookie_jar: Path) -> None:
+def run_prompts(prompts: List[str], cookie_jar: Path, purpose: str) -> None:
     try:
         with LakeraAgent(cookie_jar=cookie_jar) as agent:
-            print("Level description:\n" + agent.describe_level())
-            for prompt in prompts:
+            print("Level description:\n" + agent.describe_level(purpose=f"{purpose}:describe"))
+            for idx, prompt in enumerate(prompts, 1):
                 print("\n> Prompt:\n" + prompt)
-                response = agent.submit_prompt(prompt)
+                response = agent.submit_prompt(prompt, purpose=f"{purpose}:prompt#{idx}")
                 print("Response:\n" + response)
     except LakeraAgentError as exc:
         print(f"LakeraAgentError: {exc}")
@@ -47,7 +52,7 @@ def run_prompts(prompts: List[str], cookie_jar: Path) -> None:
 def main() -> None:
     args = parse_args()
     prompts = args.prompts or DEFAULT_PROMPTS
-    run_prompts(prompts, args.cookie_jar)
+    run_prompts(prompts, args.cookie_jar, args.purpose)
 
 
 if __name__ == "__main__":
