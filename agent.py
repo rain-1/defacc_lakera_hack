@@ -1,0 +1,255 @@
+"""Autonomous loop that drives Lakera Gandalf using an OpenRouter-hosted LLM."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
+
+import requests
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from lakera import LakeraAgent, LakeraAgentError
+
+
+@dataclass
+class ParsedAction:
+    tag: str
+    content: str
+
+
+class PromptRenderer:
+    """Thin wrapper around Jinja2 for the main attack prompt."""
+
+    def __init__(self, template_path: Path) -> None:
+        if not template_path.exists():
+            raise FileNotFoundError(f"Prompt template not found: {template_path}")
+        self._env = Environment(
+            loader=FileSystemLoader(str(template_path.parent)),
+            autoescape=False,
+            undefined=StrictUndefined,
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        self._template = self._env.get_template(template_path.name)
+
+    def render(self, *, description: str, turns: List[Dict[str, str]], guidance: Optional[str]) -> str:
+        return self._template.render(description=description, turns=turns, guidance=guidance)
+
+
+class TranscriptLogger:
+    """JSONL logger so each agent step can be replayed later."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def log(self, event: str, **payload: object) -> None:
+        entry = {"timestamp": self._timestamp(), "event": event}
+        entry.update(payload)
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+
+
+class GandalfAutoAgent:
+    """Coordinates Lakera, the prompt template, OpenRouter, and transcript logging."""
+
+    TAG_PATTERN = re.compile(r"<(prompt|password)>(.*?)</\\1>", re.IGNORECASE | re.DOTALL)
+
+    def __init__(
+        self,
+        *,
+        template_path: Path,
+        transcript_dir: Path,
+        openrouter_model: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
+        openrouter_referer: Optional[str] = None,
+        openrouter_title: Optional[str] = None,
+        http_timeout: float = 60.0,
+        history_limit: int = 20,
+        guidance: Optional[str] = None,
+        lakera_kwargs: Optional[Dict[str, object]] = None,
+    ) -> None:
+        self._renderer = PromptRenderer(template_path)
+        self._guidance = guidance
+        self._history_limit = max(0, history_limit)
+        self._lakera_kwargs = lakera_kwargs or {}
+        self._openrouter_model = openrouter_model or os.getenv("OPENROUTER_MODEL")
+        self._openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+        if not self._openrouter_model:
+            raise RuntimeError(
+                "OpenRouter model is missing. Set OPENROUTER_MODEL or pass --openrouter-model explicitly."
+            )
+        self._http_timeout = http_timeout
+        date_str = datetime.now(timezone.utc).date().isoformat()
+        transcript_path = transcript_dir / f"transcript-{date_str}.jsonl"
+        self._logger = TranscriptLogger(transcript_path)
+        self._turns: List[Dict[str, str]] = []
+        self._http = requests.Session()
+        referer_header = openrouter_referer or os.getenv("OPENROUTER_REFERER")
+        title_header = openrouter_title or os.getenv("OPENROUTER_TITLE")
+        if referer_header:
+            self._http.headers["HTTP-Referer"] = referer_header
+        if title_header:
+            self._http.headers["X-Title"] = title_header
+
+    def run(self, *, max_rounds: int = 10) -> None:
+        with LakeraAgent(**self._lakera_kwargs) as lakera:
+            description = lakera.describe_level(purpose="auto_agent:describe")
+            self._logger.log("level_description", description=description)
+            for round_idx in range(1, max_rounds + 1):
+                llm_prompt = self._renderer.render(description=description, turns=self._turns, guidance=self._guidance)
+                self._logger.log("llm_prompt", round=round_idx, prompt=llm_prompt)
+                llm_response = self._call_openrouter(llm_prompt)
+                self._logger.log("llm_response", round=round_idx, response=llm_response)
+                actions = self._extract_actions(llm_response)
+                if not actions:
+                    self._logger.log("no_actions", round=round_idx, response=llm_response)
+                    break
+                for action in actions:
+                    if action.tag == "prompt":
+                        self._handle_prompt_action(lakera, action.content, round_idx)
+                    elif action.tag == "password":
+                        if self._handle_password_action(lakera, action.content, round_idx):
+                            return
+            self._logger.log("run_complete", rounds=len(self._turns))
+
+    def _call_openrouter(self, prompt: str) -> str:
+        if not self._openrouter_api_key:
+            raise RuntimeError("OpenRouter API key is missing. Set OPENROUTER_API_KEY or pass openrouter_api_key explicitly.")
+        headers = {
+            "Authorization": f"Bearer {self._openrouter_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self._openrouter_model,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+        }
+        response = self._http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=self._http_timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("OpenRouter response did not include any choices")
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if not content:
+            raise RuntimeError("OpenRouter response choice was missing content")
+        return content
+
+    def _extract_actions(self, llm_response: str) -> List[ParsedAction]:
+        matches = self.TAG_PATTERN.findall(llm_response)
+        actions: List[ParsedAction] = []
+        for tag, body in matches:
+            text = body.strip()
+            if text:
+                actions.append(ParsedAction(tag=tag.lower(), content=text))
+        return actions
+
+    def _handle_prompt_action(self, lakera: LakeraAgent, prompt: str, round_idx: int) -> None:
+        try:
+            response = lakera.submit_prompt(prompt, purpose=f"auto_agent:round{round_idx}:prompt")
+        except LakeraAgentError as exc:
+            self._logger.log("prompt_error", round=round_idx, prompt=prompt, error=str(exc))
+            raise
+        self._logger.log("prompt_submission", round=round_idx, prompt=prompt, response=response)
+        self._append_turn("agent", prompt)
+        self._append_turn("lakera", response)
+
+    def _handle_password_action(self, lakera: LakeraAgent, password: str, round_idx: int) -> bool:
+        try:
+            response = lakera.submit_password(password, purpose=f"auto_agent:round{round_idx}:password")
+        except LakeraAgentError as exc:
+            self._logger.log("password_error", round=round_idx, password=password, error=str(exc))
+            raise
+        self._logger.log(
+            "password_submission",
+            round=round_idx,
+            password=password,
+            response=response,
+            next_level=lakera.last_next_level_url,
+        )
+        self._append_turn("agent", f"[password attempt] {password}")
+        self._append_turn("lakera", response)
+        if lakera.last_next_level_url:
+            self._logger.log("next_level", url=lakera.last_next_level_url)
+            return True
+        return False
+
+    def _append_turn(self, role: str, content: str) -> None:
+        self._turns.append({"role": role, "content": content})
+        if self._history_limit and len(self._turns) > self._history_limit:
+            self._turns = self._turns[-self._history_limit :]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Autonomous Lakera Gandalf agent")
+    parser.add_argument("--cookie-jar", type=Path, default=Path("cookies.json"), help="Path to persist Lakera cookies")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True, help="Run Chrome in headless mode")
+    parser.add_argument("--template", type=Path, default=Path("prompts/main.txt"), help="Path to the Jinja prompt template")
+    parser.add_argument("--transcript-dir", type=Path, default=Path("."), help="Directory where transcript-[date].jsonl is stored")
+    parser.add_argument(
+        "--openrouter-model",
+        default=os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
+        help="OpenRouter model identifier (defaults to OPENROUTER_MODEL env var)",
+    )
+    parser.add_argument("--openrouter-key", help="OpenRouter API key (falls back to OPENROUTER_API_KEY env var)")
+    parser.add_argument(
+        "--openrouter-referer",
+        default=os.getenv("OPENROUTER_REFERER"),
+        help="HTTP Referer header required by OpenRouter",
+    )
+    parser.add_argument(
+        "--openrouter-title",
+        default=os.getenv("OPENROUTER_TITLE"),
+        help="Title header identifying this integration",
+    )
+    parser.add_argument("--guidance", help="Optional operator guidance injected into the template")
+    parser.add_argument("--history-limit", type=int, default=20, help="Max number of turns to feed back into the template")
+    parser.add_argument("--max-rounds", type=int, default=10, help="Maximum LLM-Lakera cycles to execute")
+    parser.add_argument("--http-timeout", type=float, default=60.0, help="Timeout for OpenRouter requests in seconds")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    lakera_kwargs = {
+        "cookie_jar": args.cookie_jar,
+        "headless": args.headless,
+    }
+    agent = GandalfAutoAgent(
+        template_path=args.template,
+        transcript_dir=args.transcript_dir,
+        openrouter_model=args.openrouter_model,
+        openrouter_api_key=args.openrouter_key,
+        openrouter_referer=args.openrouter_referer,
+        openrouter_title=args.openrouter_title,
+        guidance=args.guidance,
+        history_limit=args.history_limit,
+        http_timeout=args.http_timeout,
+        lakera_kwargs=lakera_kwargs,
+    )
+    try:
+        agent.run(max_rounds=args.max_rounds)
+    except LakeraAgentError as exc:
+        agent._logger.log("lakera_error", error=str(exc))
+        raise
+
+
+if __name__ == "__main__":
+    main()
