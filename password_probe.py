@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     try:
-        with LakeraAgent(cookie_jar=args.cookie_jar) as agent:
+        with LakeraAgent(headless=False, cookie_jar=args.cookie_jar) as agent:
             print("Level description:\n" + agent.describe_level(purpose=f"{args.purpose}:describe"))
             warmup = args.warmup_prompt.strip()
             if warmup:
