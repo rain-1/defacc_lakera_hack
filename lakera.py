@@ -47,6 +47,7 @@ class LakeraAgent:
     def _build_driver(self) -> webdriver.Chrome:
         binary_path = self._resolve_browser_binary()
         options = Options()
+        options.binary_location = "/usr/bin/chromium-browser"
         if self._headless:
             options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
