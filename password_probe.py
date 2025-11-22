@@ -47,6 +47,8 @@ def main() -> None:
             print("\n> Password attempt:")
             result = agent.submit_password(args.password, purpose=f"{args.purpose}:password")
             print("Result:\n" + result)
+            if agent.last_next_level_url:
+                print("Next level URL:\n" + agent.last_next_level_url)
     except LakeraAgentError as exc:
         print(f"LakeraAgentError: {exc}")
 

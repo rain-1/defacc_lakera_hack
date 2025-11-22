@@ -40,6 +40,7 @@ class LakeraAgent:
         self._headless = headless
         self._chrome_binary = chrome_binary
         self._log_path = log_path
+        self._last_next_level_url: Optional[str] = None
         self._driver = self._build_driver()
         self._wait = WebDriverWait(self._driver, self._timeout)
 
@@ -106,7 +107,15 @@ class LakeraAgent:
             return None
         return answers[-1].text.strip()
 
-    def _log_event(self, action: str, request: dict, *, response: Optional[str] = None, error: Optional[str] = None) -> None:
+    def _log_event(
+        self,
+        action: str,
+        request: dict,
+        *,
+        response: Optional[str] = None,
+        error: Optional[str] = None,
+        extra: Optional[dict] = None,
+    ) -> None:
         if not self._log_path:
             return
         entry = {
@@ -118,6 +127,8 @@ class LakeraAgent:
             "error": error,
             "status": "error" if error else "success",
         }
+        if extra:
+            entry.update(extra)
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
             with self._log_path.open("a", encoding="utf-8") as handle:
@@ -189,6 +200,33 @@ class LakeraAgent:
             raise LakeraAgentError("timed out waiting for answer") from exc
         return result or ""
 
+    def _capture_next_level_url(self) -> Optional[str]:
+        try:
+            alert = self._driver.find_element(By.CSS_SELECTOR, "div.customAlert")
+        except NoSuchElementException:
+            return None
+        candidates = alert.find_elements(By.TAG_NAME, "button")
+        target_button = None
+        for button in candidates:
+            text = button.text.strip().lower()
+            if "next level" in text:
+                target_button = button
+                break
+        if not target_button:
+            return None
+
+        original_url = self._driver.current_url
+        try:
+            target_button.click()
+        except WebDriverException:
+            return None
+
+        try:
+            self._wait.until(lambda drv: drv.current_url != original_url)
+        except TimeoutException:
+            return None
+        return self._driver.current_url
+
     def describe_level(self, purpose: Optional[str] = None) -> str:
         payload = {"purpose": purpose or "describe_level", "url": self._base_url}
         try:
@@ -239,6 +277,8 @@ class LakeraAgent:
             guess_input.send_keys(password)
             self._submit_form(guess_input)
             answer = self._wait_for_password_alert()
+            next_level_url = self._capture_next_level_url()
+            self._last_next_level_url = next_level_url
             self._dismiss_password_alerts()
         except TimeoutException as exc:
             error_message = "timed out waiting for password input"
@@ -248,5 +288,10 @@ class LakeraAgent:
             self._log_event("submit_password", payload, error=str(exc))
             raise
         self.save_cookies()
-        self._log_event("submit_password", payload, response=answer)
+        extra = {"next_level_url": self._last_next_level_url} if self._last_next_level_url else None
+        self._log_event("submit_password", payload, response=answer, extra=extra)
         return answer
+
+    @property
+    def last_next_level_url(self) -> Optional[str]:
+        return self._last_next_level_url
