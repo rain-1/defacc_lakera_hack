@@ -122,32 +122,41 @@ class GandalfAutoAgent:
     def run(self, *, max_rounds: int = 10) -> None:
         LOG.info("Starting GandalfAutoAgent run; max_rounds=%d", max_rounds)
         with LakeraAgent(**self._lakera_kwargs) as lakera:
-            LOG.debug("Fetching level description via Lakera")
-            description = lakera.describe_level(purpose="auto_agent:describe")
+            level_number = 1
+            LOG.debug("Fetching level %d description via Lakera", level_number)
+            description = self._load_level_description(lakera, level_number, active=False)
             LOG.debug("Level description length=%d", len(description))
-            self._logger.log("level_description", description=description)
+            rounds_executed = 0
             for round_idx in range(1, max_rounds + 1):
-                LOG.info("Round %d/%d", round_idx, max_rounds)
+                rounds_executed = round_idx
+                LOG.info("Round %d/%d (level %d)", round_idx, max_rounds, level_number)
                 llm_prompt = self._renderer.render(description=description, turns=self._turns, guidance=self._guidance)
                 LOG.debug("Rendered template characters=%d", len(llm_prompt))
-                self._logger.log("llm_prompt", round=round_idx, prompt=llm_prompt)
+                self._logger.log("llm_prompt", round=round_idx, prompt=llm_prompt, level=level_number)
                 llm_response = self._call_openrouter(llm_prompt)
                 LOG.debug("OpenRouter response length=%d", len(llm_response))
-                self._logger.log("llm_response", round=round_idx, response=llm_response)
+                self._logger.log("llm_response", round=round_idx, response=llm_response, level=level_number)
                 actions = self._extract_actions(llm_response)
                 if not actions:
                     LOG.warning("Round %d produced no actionable XML tags", round_idx)
-                    self._logger.log("no_actions", round=round_idx, response=llm_response)
+                    self._logger.log("no_actions", round=round_idx, response=llm_response, level=level_number)
                     break
+                advanced_level = False
                 for action in actions:
                     if action.tag == "prompt":
-                        self._handle_prompt_action(lakera, action.content, round_idx)
+                        self._handle_prompt_action(lakera, action.content, round_idx, level_number)
                     elif action.tag == "password":
-                        if self._handle_password_action(lakera, action.content, round_idx):
-                            LOG.info("Password accepted; exiting loop")
-                            return
-            LOG.info("Run finished without password success")
-            self._logger.log("run_complete", rounds=len(self._turns))
+                        if self._handle_password_action(lakera, action.content, round_idx, level_number):
+                            LOG.info("Password accepted for level %d", level_number)
+                            level_number += 1
+                            description = self._load_level_description(lakera, level_number, active=True)
+                            self._turns.clear()
+                            advanced_level = True
+                            break
+                if advanced_level:
+                    continue
+            LOG.info("Run complete; rounds=%d levels_reached=%d", rounds_executed, level_number)
+            self._logger.log("run_complete", rounds=rounds_executed, level=level_number)
 
     def _call_openrouter(self, prompt: str) -> str:
         if not self._openrouter_api_key:
@@ -192,35 +201,88 @@ class GandalfAutoAgent:
             LOG.debug("No XML tags found in response snippet=%r", snippet)
         return actions
 
-    def _handle_prompt_action(self, lakera: LakeraAgent, prompt: str, round_idx: int) -> None:
-        LOG.info("Submitting prompt to Lakera (round %d)", round_idx)
+    def _load_level_description(self, lakera: LakeraAgent, level_number: int, *, active: bool) -> str:
+        purpose = f"auto_agent:level{level_number}:describe"
+        if active:
+            description = lakera.describe_active_level(purpose=purpose)
+        else:
+            description = lakera.describe_level(purpose=purpose)
+        self._logger.log(
+            "level_description",
+            level=level_number,
+            description=description,
+            url=lakera.current_url,
+        )
+        return description
+
+    def _handle_prompt_action(self, lakera: LakeraAgent, prompt: str, round_idx: int, level_number: int) -> None:
+        LOG.info("Submitting prompt to Lakera (round %d, level %d)", round_idx, level_number)
         try:
             response = lakera.submit_prompt(prompt, purpose=f"auto_agent:round{round_idx}:prompt")
         except LakeraAgentError as exc:
-            self._logger.log("prompt_error", round=round_idx, prompt=prompt, error=str(exc))
+            self._logger.log(
+                "prompt_error",
+                round=round_idx,
+                level=level_number,
+                prompt=prompt,
+                error=str(exc),
+            )
             raise
-        self._logger.log("prompt_submission", round=round_idx, prompt=prompt, response=response)
+        if lakera.last_prompt_error:
+            error_text = lakera.last_prompt_error
+            tagged_response = f"[validation-error] {error_text}"
+            self._logger.log(
+                "prompt_validation_error",
+                round=round_idx,
+                level=level_number,
+                prompt=prompt,
+                error=error_text,
+            )
+            self._append_turn("agent", prompt)
+            self._append_turn("lakera", tagged_response)
+            return
+        self._logger.log(
+            "prompt_submission",
+            round=round_idx,
+            level=level_number,
+            prompt=prompt,
+            response=response,
+        )
         self._append_turn("agent", prompt)
         self._append_turn("lakera", response)
 
-    def _handle_password_action(self, lakera: LakeraAgent, password: str, round_idx: int) -> bool:
-        LOG.info("Submitting password attempt to Lakera (round %d)", round_idx)
+    def _handle_password_action(self, lakera: LakeraAgent, password: str, round_idx: int, level_number: int) -> bool:
+        LOG.info("Submitting password attempt to Lakera (round %d, level %d)", round_idx, level_number)
         try:
             response = lakera.submit_password(password, purpose=f"auto_agent:round{round_idx}:password")
         except LakeraAgentError as exc:
-            self._logger.log("password_error", round=round_idx, password=password, error=str(exc))
+            self._logger.log(
+                "password_error",
+                round=round_idx,
+                password=password,
+                level=level_number,
+                error=str(exc),
+            )
             raise
         self._logger.log(
             "password_submission",
             round=round_idx,
             password=password,
             response=response,
+            level=level_number,
             next_level=lakera.last_next_level_url,
         )
         self._append_turn("agent", f"[password attempt] {password}")
         self._append_turn("lakera", response)
         if lakera.last_next_level_url:
             self._logger.log("next_level", url=lakera.last_next_level_url)
+            self._persist_latest_url(lakera.last_next_level_url)
+            return True
+            self._logger.log(
+                "next_level",
+                level=level_number + 1,
+                url=lakera.last_next_level_url,
+            )
             self._persist_latest_url(lakera.last_next_level_url)
             return True
         return False

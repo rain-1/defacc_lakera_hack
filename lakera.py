@@ -57,8 +57,15 @@ class LakeraAgent:
         self._storage_path = storage_path
         self._page_load_stop_after = max(0.0, page_load_stop_after)
         self._last_next_level_url: Optional[str] = None
+        self._last_prompt_error: Optional[str] = None
         self._driver = self._build_driver()
         self._wait = WebDriverWait(self._driver, self._timeout)
+
+    @staticmethod
+    def _sanitize_sendable_text(text: str) -> tuple[str, bool]:
+        """Remove characters outside the Basic Multilingual Plane (ChromeDriver limitation)."""
+        sanitized = "".join(ch for ch in text if ord(ch) <= 0xFFFF)
+        return sanitized, sanitized != text
 
     def _build_driver(self) -> webdriver.Chrome:
         binary_path = self._resolve_browser_binary()
@@ -190,6 +197,15 @@ class LakeraAgent:
             return None
         return answers[-1].text.strip()
 
+    def _find_prompt_error(self) -> Optional[str]:
+        selectors = "p.text-red-500, p[class*='text-red']"
+        try:
+            error = self._driver.find_element(By.CSS_SELECTOR, selectors)
+        except NoSuchElementException:
+            return None
+        text = error.text.strip()
+        return text or None
+
     def _log_event(
         self,
         action: str,
@@ -280,20 +296,25 @@ class LakeraAgent:
         except WebDriverException:
             form.submit()
 
-    def _wait_for_answer(self, previous: Optional[str] = None) -> str:
-        def _answer_updated(driver: webdriver.Chrome) -> Optional[str]:
+    def _wait_for_prompt_result(self, previous: Optional[str] = None) -> tuple[str, str]:
+        def _result_ready(driver: webdriver.Chrome) -> Optional[tuple[str, str]]:
+            error_text = self._find_prompt_error()
+            if error_text:
+                return ("error", error_text)
             text = self._find_answer_text()
             if text is None:
-                return None if previous else ""
+                return None if previous else ("answer", "")
             if not previous or text != previous:
-                return text
+                return ("answer", text)
             return False
 
         try:
-            result = self._wait.until(_answer_updated)
+            result = self._wait.until(_result_ready)
         except TimeoutException as exc:
-            raise LakeraAgentError("timed out waiting for answer") from exc
-        return result or ""
+            raise LakeraAgentError("timed out waiting for prompt result") from exc
+        if not result:
+            return ("answer", "")
+        return result
 
     def _capture_next_level_url(self) -> Optional[str]:
         try:
@@ -407,15 +428,22 @@ class LakeraAgent:
     def submit_prompt(self, prompt: str, purpose: Optional[str] = None) -> str:
         if not prompt.strip():
             raise LakeraAgentError("prompt text cannot be empty")
-        payload = {"purpose": purpose or "prompt", "prompt": prompt}
+        sanitized_prompt, changed = self._sanitize_sendable_text(prompt)
+        if not sanitized_prompt.strip():
+            raise LakeraAgentError("prompt became empty after removing unsupported characters")
+        payload = {"purpose": purpose or "prompt", "prompt": sanitized_prompt}
+        if changed:
+            payload["original_prompt"] = prompt
+            payload["sanitized"] = True
+        self._last_prompt_error = None
         try:
             textarea = self._wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea#comment"))
             )
             textarea.clear()
-            textarea.send_keys(prompt)
+            textarea.send_keys(sanitized_prompt)
             self._submit_form(textarea)
-            answer = self._wait_for_answer()
+            result_type, answer = self._wait_for_prompt_result()
         except TimeoutException as exc:
             error_message = "timed out waiting for prompt form"
             self._log_event("submit_prompt", payload, error=error_message)
@@ -424,19 +452,29 @@ class LakeraAgent:
             self._log_event("submit_prompt", payload, error=str(exc))
             raise
         self.save_cookies()
-        self._log_event("submit_prompt", payload, response=answer)
+        if result_type == "error":
+            self._last_prompt_error = answer
+            self._log_event("submit_prompt", payload, response=answer, extra={"result_type": "validation_error"})
+        else:
+            self._log_event("submit_prompt", payload, response=answer)
         return answer
 
     def submit_password(self, password: str, purpose: Optional[str] = None) -> str:
         if not password.strip():
             raise LakeraAgentError("password cannot be empty")
-        payload = {"purpose": purpose or "password", "password": password}
+        sanitized_password, changed = self._sanitize_sendable_text(password)
+        if not sanitized_password.strip():
+            raise LakeraAgentError("password became empty after removing unsupported characters")
+        payload = {"purpose": purpose or "password", "password": sanitized_password}
+        if changed:
+            payload["original_password"] = password
+            payload["sanitized"] = True
         try:
             guess_input = self._wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "input#guess"))
             )
             guess_input.clear()
-            guess_input.send_keys(password)
+            guess_input.send_keys(sanitized_password)
             self._submit_form(guess_input)
             answer = self._wait_for_password_alert()
             next_level_url = self._capture_next_level_url()
@@ -457,3 +495,16 @@ class LakeraAgent:
     @property
     def last_next_level_url(self) -> Optional[str]:
         return self._last_next_level_url
+    
+    @property
+    def current_url(self) -> Optional[str]:
+        if not self._driver:
+            return None
+        try:
+            return self._driver.current_url
+        except WebDriverException:
+            return None
+
+    @property
+    def last_prompt_error(self) -> Optional[str]:
+        return self._last_prompt_error
