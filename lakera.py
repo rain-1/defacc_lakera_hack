@@ -37,6 +37,9 @@ EMPTY_ANSWER_GRACE_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_GRACE", "2"))
 EMPTY_ANSWER_POLL_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_POLL", "0.2"))
 PROMPT_SUBMIT_MAX_ATTEMPTS = max(1, int(os.getenv("LAKERA_PROMPT_ATTEMPTS", "2")))
 PROMPT_SUBMIT_RETRY_DELAY = float(os.getenv("LAKERA_PROMPT_RETRY_DELAY", "1.0"))
+PROMPT_POST_SUBMIT_DELAY = float(os.getenv("LAKERA_PROMPT_POST_DELAY", "0.3"))
+PASSWORD_WARMUP_PROMPT = os.getenv("LAKERA_PASSWORD_WARMUP", "Hello Gandalf!" )
+PASSWORD_WARMUP_ATTEMPTS = max(1, int(os.getenv("LAKERA_PASSWORD_WARMUP_ATTEMPTS", "2")))
 
 
 class LakeraAgent:
@@ -64,6 +67,7 @@ class LakeraAgent:
         self._page_load_stop_after = max(0.0, page_load_stop_after)
         self._last_next_level_url: Optional[str] = None
         self._last_prompt_error: Optional[str] = None
+        self._password_warmup_prompt = PASSWORD_WARMUP_PROMPT
         self._driver = self._build_driver()
         self._wait = WebDriverWait(self._driver, self._timeout)
 
@@ -321,15 +325,20 @@ class LakeraAgent:
         except WebDriverException:
             form.submit()
 
-    def _wait_for_prompt_result(self, previous: Optional[str] = None) -> tuple[str, str]:
+    def _wait_for_prompt_result(
+        self,
+        *,
+        previous_answer: Optional[str] = None,
+        previous_error: Optional[str] = None,
+    ) -> tuple[str, str]:
         def _result_ready(driver: webdriver.Chrome) -> Optional[tuple[str, str]]:
             error_text = self._find_prompt_error()
-            if error_text:
+            if error_text and error_text != previous_error:
                 return ("error", error_text)
             text = self._find_answer_text()
             if text is None:
-                return None if previous else ("answer", "")
-            if not previous or text != previous:
+                return None if previous_answer else ("answer", "")
+            if not previous_answer or text != previous_answer:
                 return ("answer", text)
             return False
 
@@ -475,11 +484,21 @@ class LakeraAgent:
                     EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea#comment"))
                 )
                 textarea.clear()
-                textarea.send_keys(sanitized_prompt)
+                adjusted_prompt = sanitized_prompt if attempt == 1 else sanitized_prompt + "."
+                textarea.send_keys(adjusted_prompt)
                 previous_answer = self._find_answer_text()
+                previous_error = self._find_prompt_error()
                 try:
                     self._submit_form(textarea)
-                    result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
+                    time.sleep(PROMPT_POST_SUBMIT_DELAY)
+                    interim_answer = self._find_answer_text()
+                    if interim_answer and (not previous_answer or interim_answer != previous_answer):
+                        result_type, answer = ("answer", interim_answer)
+                        break
+                    result_type, answer = self._wait_for_prompt_result(
+                        previous_answer=previous_answer,
+                        previous_error=previous_error,
+                    )
                     break
                 except LakeraAgentError as exc:
                     last_wait_error = exc
@@ -515,6 +534,12 @@ class LakeraAgent:
             self._log_event("submit_prompt", payload, response=answer)
         return answer
 
+    def _send_password_warmup_prompt(self) -> None:
+        try:
+            self.submit_prompt(self._password_warmup_prompt, purpose="password_warmup")
+        except LakeraAgentError:
+            pass
+
     def submit_password(self, password: str, purpose: Optional[str] = None) -> str:
         if not password.strip():
             raise LakeraAgentError("password cannot be empty")
@@ -526,9 +551,25 @@ class LakeraAgent:
             payload["original_password"] = password
             payload["sanitized"] = True
         try:
-            guess_input = self._wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input#guess"))
-            )
+            guess_input = None
+            last_exc: Optional[TimeoutException] = None
+            for attempt in range(1, PASSWORD_WARMUP_ATTEMPTS + 1):
+                self._prepare_level_page()
+                try:
+                    guess_input = self._wait.until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "input#guess"))
+                    )
+                    break
+                except TimeoutException as exc:
+                    last_exc = exc
+                    if attempt == PASSWORD_WARMUP_ATTEMPTS:
+                        raise
+                    self._send_password_warmup_prompt()
+                    time.sleep(PROMPT_SUBMIT_RETRY_DELAY)
+            if guess_input is None:
+                if last_exc:
+                    raise last_exc
+                raise LakeraAgentError("password input unavailable")
             guess_input.clear()
             guess_input.send_keys(sanitized_password)
             self._submit_form(guess_input)
