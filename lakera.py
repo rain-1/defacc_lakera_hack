@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from shutil import which
 from typing import Iterable, Optional
@@ -34,6 +35,8 @@ DEFAULT_LOG_PATH = Path(
 ).expanduser()
 EMPTY_ANSWER_GRACE_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_GRACE", "2"))
 EMPTY_ANSWER_POLL_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_POLL", "0.2"))
+PROMPT_SUBMIT_MAX_ATTEMPTS = max(1, int(os.getenv("LAKERA_PROMPT_ATTEMPTS", "2")))
+PROMPT_SUBMIT_RETRY_DELAY = float(os.getenv("LAKERA_PROMPT_RETRY_DELAY", "1.0"))
 
 
 class LakeraAgent:
@@ -465,14 +468,30 @@ class LakeraAgent:
             payload["sanitized"] = True
         self._last_prompt_error = None
         try:
-            textarea = self._wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea#comment"))
-            )
-            textarea.clear()
-            textarea.send_keys(sanitized_prompt)
-            previous_answer = self._find_answer_text()
-            self._submit_form(textarea)
-            result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
+            last_wait_error: Optional[LakeraAgentError] = None
+            for attempt in range(1, PROMPT_SUBMIT_MAX_ATTEMPTS + 1):
+                self._prepare_level_page()
+                textarea = self._wait.until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea#comment"))
+                )
+                textarea.clear()
+                textarea.send_keys(sanitized_prompt)
+                previous_answer = self._find_answer_text()
+                try:
+                    self._submit_form(textarea)
+                    result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
+                    break
+                except LakeraAgentError as exc:
+                    last_wait_error = exc
+                    if attempt == PROMPT_SUBMIT_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(PROMPT_SUBMIT_RETRY_DELAY)
+                    continue
+            else:
+                if last_wait_error:
+                    raise last_wait_error
+                raise LakeraAgentError("prompt submission failed without specific error")
+
             if result_type == "answer" and not answer.strip():
                 deadline = time.time() + EMPTY_ANSWER_GRACE_SECONDS
                 while time.time() < deadline:
