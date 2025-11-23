@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from shutil import which
 from typing import Iterable, Optional
@@ -21,6 +22,12 @@ class LakeraAgentError(RuntimeError):
     """General failure interacting with the Lakera page."""
 
 
+DEFAULT_USERDATA_DIR = Path(os.getenv("USERDATA_DIR", "userdata")).expanduser()
+DEFAULT_LOG_PATH = Path(
+    os.getenv("LAKERA_INTERACTIONS", str(DEFAULT_USERDATA_DIR / "interactions.jsonl"))
+).expanduser()
+
+
 class LakeraAgent:
     """Wraps a Selenium session to fetch descriptions, prompts, and password guesses."""
 
@@ -32,7 +39,7 @@ class LakeraAgent:
         headless: bool = True,
         timeout: float = 15.0,
         chrome_binary: Optional[Path] = None,
-        log_path: Optional[Path] = Path("interactions.jsonl"),
+        log_path: Optional[Path] = None,
         storage_path: Optional[Path] = None,
         page_load_stop_after: float = 5.0,
     ) -> None:
@@ -41,7 +48,7 @@ class LakeraAgent:
         self._timeout = timeout
         self._headless = headless
         self._chrome_binary = chrome_binary
-        self._log_path = log_path
+        self._log_path = Path(log_path) if log_path else DEFAULT_LOG_PATH
         self._storage_path = storage_path
         self._page_load_stop_after = max(0.0, page_load_stop_after)
         self._last_next_level_url: Optional[str] = None

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from lakera import LakeraAgent, LakeraAgentError
+
+DEFAULT_COOKIE_JAR = Path(os.getenv("USERDATA_DIR", "userdata")).expanduser() / "cookies.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cookie-jar",
         type=Path,
-        default=Path("cookies.json"),
+        default=DEFAULT_COOKIE_JAR,
         help="Cookie jar path for persisting session state.",
     )
     parser.add_argument(

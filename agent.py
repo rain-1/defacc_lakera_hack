@@ -20,6 +20,15 @@ from lakera import LakeraAgent, LakeraAgentError
 
 LOG = logging.getLogger(__name__)
 
+DEFAULT_USERDATA_DIR = Path(os.getenv("USERDATA_DIR", "userdata")).expanduser()
+DEFAULT_TRANSCRIPT_DIR = DEFAULT_USERDATA_DIR / "transcripts"
+DEFAULT_COOKIE_JAR = DEFAULT_USERDATA_DIR / "cookies.json"
+DEFAULT_LATEST_URL = DEFAULT_USERDATA_DIR / "latest-level.url"
+DEFAULT_STORAGE_PATH = DEFAULT_USERDATA_DIR / "lakera-storage.json"
+DEFAULT_INTERACTIONS_LOG = Path(
+    os.getenv("LAKERA_INTERACTIONS", str(DEFAULT_USERDATA_DIR / "interactions.jsonl"))
+).expanduser()
+
 
 @dataclass
 class ParsedAction:
@@ -234,10 +243,15 @@ class GandalfAutoAgent:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Autonomous Lakera Gandalf agent")
-    parser.add_argument("--cookie-jar", type=Path, default=Path("cookies.json"), help="Path to persist Lakera cookies")
+    parser.add_argument("--cookie-jar", type=Path, default=DEFAULT_COOKIE_JAR, help="Path to persist Lakera cookies")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True, help="Run Chrome in headless mode")
     parser.add_argument("--template", type=Path, default=Path("prompts/main.txt"), help="Path to the Jinja prompt template")
-    parser.add_argument("--transcript-dir", type=Path, default=Path("."), help="Directory where transcript-[date].jsonl is stored")
+    parser.add_argument(
+        "--transcript-dir",
+        type=Path,
+        default=DEFAULT_TRANSCRIPT_DIR,
+        help="Directory where transcript-[date].jsonl is stored",
+    )
     parser.add_argument(
         "--lakera-url",
         default=os.getenv("LAKERA_URL", "https://gandalf.lakera.ai/baseline"),
@@ -249,16 +263,18 @@ def parse_args() -> argparse.Namespace:
         default=float(os.getenv("LAKERA_PAGE_STOP", "5")),
         help="Seconds to wait before forcibly stopping page load (0 disables)",
     )
+    latest_url_default = Path(os.getenv("LAKERA_LATEST_URL", str(DEFAULT_LATEST_URL)))
     parser.add_argument(
         "--latest-url-path",
         type=Path,
-        default=Path(os.getenv("LAKERA_LATEST_URL", "latest-level.url")),
+        default=latest_url_default,
         help="File path where the newest level URL should be written",
     )
+    storage_default = Path(os.getenv("LAKERA_STORAGE", str(DEFAULT_STORAGE_PATH)))
     parser.add_argument(
         "--storage-path",
         type=Path,
-        default=Path(os.getenv("LAKERA_STORAGE", "lakera-storage.json")),
+        default=storage_default,
         help="Path for persisting Lakera local/session storage",
     )
     parser.add_argument(
@@ -296,6 +312,7 @@ def main() -> None:
         "base_url": args.lakera_url,
         "page_load_stop_after": max(0.0, args.page_load_stop_after),
         "storage_path": args.storage_path,
+        "log_path": DEFAULT_INTERACTIONS_LOG,
     }
     agent = GandalfAutoAgent(
         template_path=args.template,

@@ -1,9 +1,5 @@
 venv
 .venv
 __pycache__/
-cookies.json
-interactions.jsonl
 .env
-lakera-storage.json
-latest-level.url
-transcript-*.jsonl
+userdata/
