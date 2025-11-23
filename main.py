@@ -39,7 +39,7 @@ def main() -> None:
     args = parse_args()
     model = "claude-sonnet-4-5-20250929"
     # model = "claude-haiku-4-5-20251001"
-    max_rounds_level = 5
+    max_rounds_level = 50
     claude = ClaudeAgent(model)
     lever_counter = 0
     try:
