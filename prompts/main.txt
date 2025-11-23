@@ -30,3 +30,5 @@ Interaction transcript:
 {% endif %}
 
 Respond with your next action enclosed in the correct XML tag.
+
+also for testing try guessing WRONGPASS after entering some random prompt attack first of all.

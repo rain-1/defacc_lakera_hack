@@ -272,9 +272,17 @@ class LakeraAgent:
 
     def _dismiss_password_alerts(self) -> None:
         try:
-            self._driver.execute_script("document.querySelectorAll('.customAlert').forEach(el => el.remove());")
+            alerts = self._driver.find_elements(By.CSS_SELECTOR, "div.customAlert")
         except WebDriverException:
-            pass
+            return
+        dismissal_keywords = ("try again", "ok", "close", "dismiss", "continue")
+        for alert in alerts:
+            if self._click_custom_alert_button(dismissal_keywords, alert_override=alert):
+                continue
+            try:
+                self._driver.execute_script("arguments[0].remove();", alert)
+            except WebDriverException:
+                pass
 
     def _resolve_browser_binary(self) -> str:
         if self._chrome_binary:
@@ -427,9 +435,9 @@ class LakeraAgent:
             if not self._click_custom_alert_button(keywords):
                 break
 
-    def _click_custom_alert_button(self, keywords: Iterable[str]) -> bool:
+    def _click_custom_alert_button(self, keywords: Iterable[str], *, alert_override: Optional[WebElement] = None) -> bool:
         try:
-            alert = self._driver.find_element(By.CSS_SELECTOR, "div.customAlert")
+            alert = alert_override or self._driver.find_element(By.CSS_SELECTOR, "div.customAlert")
         except NoSuchElementException:
             return False
 
