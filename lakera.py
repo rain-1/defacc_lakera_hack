@@ -6,14 +6,12 @@ import json
 import os
 from pathlib import Path
 from shutil import which
-import time
 from typing import Iterable, Optional
 from datetime import datetime
 
 from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
-    InvalidElementStateException,
     NoSuchElementException,
     TimeoutException,
     WebDriverException,
@@ -207,22 +205,6 @@ class LakeraAgent:
             return None
         text = error.text.strip()
         return text or None
-
-    def _fill_prompt_input(self, textarea: WebElement, text: str, *, retries: int = 3) -> None:
-        for attempt in range(1, retries + 1):
-            try:
-                textarea.clear()
-                textarea.send_keys(text)
-                return
-            except (InvalidElementStateException, WebDriverException):
-                if attempt == retries:
-                    raise
-                time.sleep(0.3)
-                self._prepare_level_page()
-                try:
-                    textarea = self._driver.find_element(By.CSS_SELECTOR, "textarea#comment")
-                except NoSuchElementException:
-                    pass
 
     def _log_event(
         self,
@@ -455,12 +437,12 @@ class LakeraAgent:
             payload["sanitized"] = True
         self._last_prompt_error = None
         try:
-            self._prepare_level_page()
             textarea = self._wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea#comment"))
             )
+            textarea.clear()
+            textarea.send_keys(sanitized_prompt)
             previous_answer = self._find_answer_text()
-            self._fill_prompt_input(textarea, sanitized_prompt)
             self._submit_form(textarea)
             result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
         except TimeoutException as exc:
