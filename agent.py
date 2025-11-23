@@ -227,7 +227,9 @@ class GandalfAutoAgent:
                 prompt=prompt,
                 error=str(exc),
             )
-            raise
+            self._append_turn("agent", prompt)
+            self._append_turn("lakera", f"[error] prompt failed: {exc}")
+            return
         if lakera.last_prompt_error:
             error_text = lakera.last_prompt_error
             tagged_response = f"[validation-error] {error_text}"
@@ -263,7 +265,9 @@ class GandalfAutoAgent:
                 level=level_number,
                 error=str(exc),
             )
-            raise
+            self._append_turn("agent", f"[password attempt] {password}")
+            self._append_turn("lakera", f"[error] password submission failed: {exc}")
+            return False
         self._logger.log(
             "password_submission",
             round=round_idx,
@@ -275,9 +279,6 @@ class GandalfAutoAgent:
         self._append_turn("agent", f"[password attempt] {password}")
         self._append_turn("lakera", response)
         if lakera.last_next_level_url:
-            self._logger.log("next_level", url=lakera.last_next_level_url)
-            self._persist_latest_url(lakera.last_next_level_url)
-            return True
             self._logger.log(
                 "next_level",
                 level=level_number + 1,
