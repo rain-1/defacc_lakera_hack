@@ -17,7 +17,7 @@ class ClaudeAgent(object):
         self.success = False
 
 
-    def load_task_description(self, task_description, filename="prompt_hand.txt"):
+    def load_task_description(self, task_description, filename="prompts/prompt_hand.txt"):
         """
         Adds task description from Lakera in conversation.
         Reads initial prompt at the start.
@@ -34,7 +34,7 @@ class ClaudeAgent(object):
         prompt_text += '\n' + task_description
         self.messages.insert(0, {"role": "user", "content": prompt_text})
 
-    def load_task_description_wipe(self, task_description, filename="prompt_hand.txt"):
+    def load_task_description_wipe(self, task_description, filename="prompts/prompt_hand.txt"):
         """
         Wipes previous conversation and adds task description from Lakera in conversation.
         Reads initial prompt.
