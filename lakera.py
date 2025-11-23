@@ -209,6 +209,17 @@ class LakeraAgent:
         text = error.text.strip()
         return text or None
 
+    def _find_constraint_text(self) -> Optional[str]:
+        try:
+            containers = self._driver.find_elements(By.XPATH, "//div[contains(@class, 'pt-8')]")
+        except WebDriverException:
+            return None
+        for container in containers:
+            text = container.text.strip()
+            if text:
+                return text
+        return None
+
     def _log_event(
         self,
         action: str,
@@ -366,8 +377,14 @@ class LakeraAgent:
                     EC.presence_of_element_located((By.CSS_SELECTOR, "p.description"))
                 )
                 text = description.text.strip()
-                self._log_event(action, payload, response=text)
-                return text
+                constraint = self._find_constraint_text()
+                combined = text
+                extra = None
+                if constraint:
+                    combined = f"{text}\n\nConstraint:\n{constraint}"
+                    extra = {"constraint": constraint}
+                self._log_event(action, payload, response=combined, extra=extra)
+                return combined
             except TimeoutException as exc:
                 if attempt == 2:
                     error_message = "could not load level description"
