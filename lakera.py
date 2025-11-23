@@ -8,6 +8,7 @@ from pathlib import Path
 from shutil import which
 from typing import Iterable, Optional
 from datetime import datetime
+import time
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -31,6 +32,8 @@ DEFAULT_USERDATA_DIR = Path(os.getenv("USERDATA_DIR", "userdata")).expanduser()
 DEFAULT_LOG_PATH = Path(
     os.getenv("LAKERA_INTERACTIONS", str(DEFAULT_USERDATA_DIR / "interactions.jsonl"))
 ).expanduser()
+EMPTY_ANSWER_GRACE_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_GRACE", "2"))
+EMPTY_ANSWER_POLL_SECONDS = float(os.getenv("LAKERA_EMPTY_ANSWER_POLL", "0.2"))
 
 
 class LakeraAgent:
@@ -445,6 +448,14 @@ class LakeraAgent:
             previous_answer = self._find_answer_text()
             self._submit_form(textarea)
             result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
+            if result_type == "answer" and not answer.strip():
+                deadline = time.time() + EMPTY_ANSWER_GRACE_SECONDS
+                while time.time() < deadline:
+                    time.sleep(EMPTY_ANSWER_POLL_SECONDS)
+                    fresh = self._find_answer_text()
+                    if fresh and (not previous_answer or fresh != previous_answer):
+                        answer = fresh
+                        break
         except TimeoutException as exc:
             error_message = "timed out waiting for prompt form"
             self._log_event("submit_prompt", payload, error=error_message)
