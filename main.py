@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse
 from lakera import LakeraAgent, LakeraAgentError
 from claude import ClaudeAgent
+import time
 
 DEFAULT_COOKIE_JAR = Path(os.getenv("USERDATA_DIR", "userdata")).expanduser() / "cookies.json"
 
@@ -71,6 +72,7 @@ def main() -> None:
                     claude.process_lakera_output(answer, check)
                     if claude.success:
                         break
+                    time.sleep(1)
                 if not claude.success:
                     print("Max rounds reached, exiting.")
                     exit(0)
