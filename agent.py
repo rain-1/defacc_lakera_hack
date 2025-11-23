@@ -106,8 +106,9 @@ class GandalfAutoAgent:
                 "OpenRouter model is missing. Set OPENROUTER_MODEL or pass --openrouter-model explicitly."
             )
         self._http_timeout = http_timeout
-        date_str = datetime.now(timezone.utc).date().isoformat()
-        transcript_path = transcript_dir / f"transcript-{date_str}.jsonl"
+        now = datetime.now(timezone.utc)
+        run_id = now.strftime("%Y-%m-%dT%H-%M-%S")
+        transcript_path = transcript_dir / f"transcript-{run_id}.jsonl"
         self._logger = TranscriptLogger(transcript_path)
         self._turns: List[Dict[str, str]] = []
         self._http = requests.Session()
