@@ -4,12 +4,13 @@ import re
 
 class ClaudeAgent(object):
 
-    def __init__(self):
+    def __init__(self, model):
         self.client = anthropic.Anthropic(
             api_key = os.environ.get("ANTHROPIC_API_KEY")
         )
         self.messages = []
-        self.first = True
+        self.model = model
+        #self.first = True
         # state vars filled by parsing Lakera responses
         self.prompt = None
         self.password = None
@@ -33,10 +34,25 @@ class ClaudeAgent(object):
         prompt_text += '\n' + task_description
         self.messages.insert(0, {"role": "user", "content": prompt_text})
 
+    def load_task_description_wipe(self, task_description, filename="prompt_hand.txt"):
+        """
+        Wipes previous conversation and adds task description from Lakera in conversation.
+        Reads initial prompt.
+        """
+        self.success = False
+        self.messages = []
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                prompt_text = f.read().strip()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Initial prompt file not found: {filename}")
+        prompt_text += '\n' + task_description
+        self.messages.insert(0, {"role": "user", "content": prompt_text})
+
 
     def model_turn(self):
         message = self.client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model=self.model,
             max_tokens=20000,
             temperature=1,
             messages=self.messages
@@ -52,11 +68,11 @@ class ClaudeAgent(object):
         elif m_password:
             password_val = m_password.group(1).strip()
             self.password = password_val
-            return "passowrd"
+            return "password"
         else:
             raise RuntimeError(f"Model did not produce <prompt> or <password> tag.")
 
-    def extract_and_add_tags(self, answer=None, check=None):
+    def process_lakera_output(self, answer=None, check=None):
         """
         If answer or check (strings) are provided (not None), add them to self.messages
         as assistant messages wrapped in their respective tags.
@@ -77,29 +93,4 @@ class ClaudeAgent(object):
             tagged = f"<check>{inner}</check>"
             self.messages.append({"role": "assistant", "content": tagged})
             extracted.append(("check", inner))
-
-    def parse_model_output_vars(self, model_output):
-        """
-        If model_output contains <prompt>...</prompt> save to self.prompt.
-        If it contains <password>...</password> save to self.password.
-        Returns (prompt, password) where missing values are None.
-        """
-        prompt_val = None
-        password_val = None
-
-        m_prompt = re.search(r"<prompt>(.*?)</prompt>", model_output, flags=re.IGNORECASE | re.DOTALL)
-        if m_prompt:
-            prompt_val = m_prompt.group(1).strip()
-            self.prompt = prompt_val
-        else:
-            self.prompt = None
-
-        m_password = re.search(r"<password>(.*?)</password>", model_output, flags=re.IGNORECASE | re.DOTALL)
-        if m_password:
-            password_val = m_password.group(1).strip()
-            self.password = password_val
-        else:
-            self.password = None
-
-        return prompt_val, password_val
 
