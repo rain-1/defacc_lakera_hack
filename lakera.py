@@ -10,7 +10,12 @@ from typing import Iterable, Optional
 from datetime import datetime
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    NoSuchElementException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -261,7 +266,19 @@ class LakeraAgent:
         except NoSuchElementException:
             form.submit()
             return
-        submit.click()
+        try:
+            self._driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit)
+        except WebDriverException:
+            pass
+        try:
+            submit.click()
+        except ElementClickInterceptedException:
+            try:
+                self._driver.execute_script("arguments[0].click();", submit)
+            except WebDriverException:
+                form.submit()
+        except WebDriverException:
+            form.submit()
 
     def _wait_for_answer(self, previous: Optional[str] = None) -> str:
         def _answer_updated(driver: webdriver.Chrome) -> Optional[str]:
@@ -308,6 +325,16 @@ class LakeraAgent:
     def describe_level(self, purpose: Optional[str] = None) -> str:
         payload = {"purpose": purpose or "describe_level", "url": self._base_url}
         self._navigate_to(self._base_url)
+        return self._fetch_level_description("describe_level", payload)
+
+    def describe_active_level(self, purpose: Optional[str] = None) -> str:
+        payload = {
+            "purpose": purpose or "describe_active_level",
+            "url": self._driver.current_url if self._driver else None,
+        }
+        return self._fetch_level_description("describe_active_level", payload)
+
+    def _fetch_level_description(self, action: str, payload: dict) -> str:
         for attempt in (1, 2):
             try:
                 self._prepare_level_page()
@@ -315,17 +342,18 @@ class LakeraAgent:
                     EC.presence_of_element_located((By.CSS_SELECTOR, "p.description"))
                 )
                 text = description.text.strip()
-                break
-            except TimeoutException:
+                self._log_event(action, payload, response=text)
+                return text
+            except TimeoutException as exc:
                 if attempt == 2:
                     error_message = "could not load level description"
-                    self._log_event("describe_level", payload, error=error_message)
-                    raise LakeraAgentError(error_message)
-                self._driver.refresh()
-        else:
-            raise LakeraAgentError("unreachable describe_level state")
-        self._log_event("describe_level", payload, response=text)
-        return text
+                    self._log_event(action, payload, error=error_message)
+                    raise LakeraAgentError(error_message) from exc
+                try:
+                    self._driver.refresh()
+                except WebDriverException:
+                    pass
+        raise LakeraAgentError("unreachable level description fetch state")
 
     def _navigate_to(self, url: str, *, driver: Optional[webdriver.Chrome] = None) -> None:
         target = driver or self._driver

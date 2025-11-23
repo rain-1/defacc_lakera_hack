@@ -2,6 +2,7 @@
 
 ## Usage
 - Run `password_probe.py --password <guess>` to submit a password via Selenium.
+- Run `level2_probe.py` to walk through the warm-up prompt, submit the level 1 password, and stay in the same browser session while jumping to level 2 (cookies/localStorage persist under `userdata/`).
 - On a correct guess, `LakeraAgent` now clicks the in-page "Next Level" button, records the resulting URL, and prints it so you can jump directly to the next challenge.
 
 ## Setup
