@@ -25,3 +25,11 @@
 ## Data storage
 - Runtime artifacts such as `cookies.json`, `interactions.jsonl`, `latest-level.url`, `lakera-storage.json`, and rolling transcripts now live under `userdata/`.
 - Remove the `userdata/` directory if you want to reset local state; it will be recreated automatically on the next run.
+
+
+## Ubuntu on WSL
+
+```
+sudo apt remove chromium-browser
+sudo apt install chromium-chromedriver fonts-liberation
+```
