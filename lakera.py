@@ -442,8 +442,9 @@ class LakeraAgent:
             )
             textarea.clear()
             textarea.send_keys(sanitized_prompt)
+            previous_answer = self._find_answer_text()
             self._submit_form(textarea)
-            result_type, answer = self._wait_for_prompt_result()
+            result_type, answer = self._wait_for_prompt_result(previous=previous_answer)
         except TimeoutException as exc:
             error_message = "timed out waiting for prompt form"
             self._log_event("submit_prompt", payload, error=error_message)
