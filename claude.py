@@ -52,12 +52,14 @@ class ClaudeAgent(object):
 
 
     def model_turn(self):
-        message = self.client.messages.create(
+        output = self.client.messages.create(
             model=self.model,
             max_tokens=20000,
             temperature=1,
             messages=self.messages
-        ).content[0].text
+        )
+        print(output)
+        message = output.content[0].text
         print("[claude] Model output:" + message)
         self.messages.append({"role": "assistant", "content": message})
 
@@ -84,7 +86,7 @@ class ClaudeAgent(object):
         if answer is not None:
             inner = answer.strip()
             tagged = f"<answer>{inner}</answer>"
-            self.messages.append({"role": "assistant", "content": tagged})
+            self.messages.append({"role": "user", "content": tagged})
             extracted.append(("answer", inner))
         elif check is not None:
             inner = check.strip()
@@ -94,6 +96,6 @@ class ClaudeAgent(object):
             else:
                 message = "Wrong password! Change your prompt."
             tagged = f"<check>{message}</check>"
-            self.messages.append({"role": "assistant", "content": tagged})
+            self.messages.append({"role": "user", "content": tagged})
             extracted.append(("check", inner))
 

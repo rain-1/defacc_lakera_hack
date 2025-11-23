@@ -37,15 +37,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    #model = "claude-sonnet-4-5-20250929"
-    model = "claude-haiku-4-5-20251001"
+    model = "claude-sonnet-4-5-20250929"
+    # model = "claude-haiku-4-5-20251001"
     max_rounds_level = 5
     claude = ClaudeAgent(model)
     lever_counter = 0
     try:
         with LakeraAgent(headless=False, cookie_jar=args.cookie_jar) as lakera:
             while True:
-                level_description = lakera.describe_level()
+                level_description = lakera.describe_active_level()
                 lever_counter += 1
                 print(f"[lakera] Level {lever_counter} description: {level_description}")
 
@@ -53,6 +53,7 @@ def main() -> None:
                 
                 for i in range(max_rounds_level):
                     print(f"--- Round {i+1} ---")
+                    # print(claude.messages)
                     output = claude.model_turn()
                     answer, check = None, None
                     if output == "prompt":
