@@ -125,16 +125,31 @@ class GandalfAutoAgent:
             level_number = 1
             LOG.debug("Fetching level %d description via Lakera", level_number)
             description = self._load_level_description(lakera, level_number, active=False)
+            description_level = level_number
             LOG.debug("Level description length=%d", len(description))
             rounds_executed = 0
             for round_idx in range(1, max_rounds + 1):
                 rounds_executed = round_idx
+                if description_level != level_number:
+                    LOG.debug(
+                        "Description level (%d) lags behind active level (%d); refreshing",
+                        description_level,
+                        level_number,
+                    )
+                    description = self._load_level_description(lakera, level_number, active=True)
+                    description_level = level_number
                 LOG.info("Round %d/%d (level %d)", round_idx, max_rounds, level_number)
                 llm_prompt = self._renderer.render(description=description, turns=self._turns, guidance=self._guidance)
                 LOG.debug("Rendered template characters=%d", len(llm_prompt))
+                print("\n===== OpenRouter Prompt (round", round_idx, ", level", level_number, ") =====")
+                print(llm_prompt)
+                print("===== End Prompt =====\n")
                 self._logger.log("llm_prompt", round=round_idx, prompt=llm_prompt, level=level_number)
                 llm_response = self._call_openrouter(llm_prompt)
                 LOG.debug("OpenRouter response length=%d", len(llm_response))
+                print("===== OpenRouter Response (round", round_idx, ", level", level_number, ") =====")
+                print(llm_response)
+                print("===== End Response =====\n")
                 self._logger.log("llm_response", round=round_idx, response=llm_response, level=level_number)
                 actions = self._extract_actions(llm_response)
                 if not actions:
@@ -150,6 +165,7 @@ class GandalfAutoAgent:
                             LOG.info("Password accepted for level %d", level_number)
                             level_number += 1
                             description = self._load_level_description(lakera, level_number, active=True)
+                            description_level = level_number
                             self._turns.clear()
                             advanced_level = True
                             break
