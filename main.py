@@ -40,15 +40,18 @@ def main() -> None:
     model = "claude-haiku-4-5-20251001"
     max_rounds_level = 5
     claude = ClaudeAgent(model)
+    lever_counter = 0
     try:
         with LakeraAgent(headless=False, cookie_jar=args.cookie_jar) as lakera:
             while True:
                 level_description = lakera.describe_level()
-                print("[lakera] Level description:\n" + level_description)
+                lever_counter += 1
+                print(f"[lakera] Level {lever_counter} description: {level_description}")
 
                 claude.load_task_description_wipe(task_description=level_description)
                 
                 for i in range(max_rounds_level):
+                    print(f"--- Round {i+1} ---")
                     output = claude.model_turn()
                     answer, check = None, None
                     if output == "prompt":
@@ -68,8 +71,9 @@ def main() -> None:
                     claude.process_lakera_output(answer, check)
                     if claude.success:
                         break
-                print("Max rounds reached, exiting.")
-                exit(0)
+                if not claude.success:
+                    print("Max rounds reached, exiting.")
+                    exit(0)
     except LakeraAgentError as exc:
         print(f"LakeraAgentError: {exc}")
 

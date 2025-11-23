@@ -5,8 +5,9 @@ import re
 class ClaudeAgent(object):
 
     def __init__(self, model):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
         self.client = anthropic.Anthropic(
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            api_key = api_key
         )
         self.messages = []
         self.model = model
@@ -56,11 +57,12 @@ class ClaudeAgent(object):
             max_tokens=20000,
             temperature=1,
             messages=self.messages
-        )
-        self.messages.append(message)
+        ).content[0].text
+        print("[claude] Model output:" + message)
+        self.messages.append({"role": "assistant", "content": message})
 
-        m_prompt = re.search(r"<prompt>(.*?)</prompt>", message.content, flags=re.IGNORECASE | re.DOTALL)
-        m_password = re.search(r"<password>(.*?)</password>", message.content, flags=re.IGNORECASE | re.DOTALL)
+        m_prompt = re.search(r"<prompt>(.*?)</prompt>", message, flags=re.IGNORECASE | re.DOTALL)
+        m_password = re.search(r"<password>(.*?)</password>", message, flags=re.IGNORECASE | re.DOTALL)
         if m_prompt:
             prompt_val = m_prompt.group(1).strip()
             self.prompt = prompt_val 
@@ -87,10 +89,11 @@ class ClaudeAgent(object):
         elif check is not None:
             inner = check.strip()
             if "You guessed the password!" in inner:
+                message = "You guessed the password!"
                 self.success = True
             else:
-                inner.replace("to bypass the defenses", "")
-            tagged = f"<check>{inner}</check>"
+                message = "Wrong password! Change your prompt."
+            tagged = f"<check>{message}</check>"
             self.messages.append({"role": "assistant", "content": tagged})
             extracted.append(("check", inner))
 
