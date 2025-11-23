@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from shutil import which
-from typing import Optional
+from typing import Iterable, Optional
 from datetime import datetime
 
 from selenium import webdriver
@@ -33,6 +33,8 @@ class LakeraAgent:
         timeout: float = 15.0,
         chrome_binary: Optional[Path] = None,
         log_path: Optional[Path] = Path("interactions.jsonl"),
+        storage_path: Optional[Path] = None,
+        page_load_stop_after: float = 5.0,
     ) -> None:
         self._base_url = base_url
         self._cookie_jar = cookie_jar
@@ -40,6 +42,8 @@ class LakeraAgent:
         self._headless = headless
         self._chrome_binary = chrome_binary
         self._log_path = log_path
+        self._storage_path = storage_path
+        self._page_load_stop_after = max(0.0, page_load_stop_after)
         self._last_next_level_url: Optional[str] = None
         self._driver = self._build_driver()
         self._wait = WebDriverWait(self._driver, self._timeout)
@@ -47,7 +51,6 @@ class LakeraAgent:
     def _build_driver(self) -> webdriver.Chrome:
         binary_path = self._resolve_browser_binary()
         options = Options()
-        options.binary_location = "/usr/bin/chromium-browser"
         if self._headless:
             options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
@@ -61,9 +64,15 @@ class LakeraAgent:
         except WebDriverException as exc:
             raise LakeraAgentError("failed to start Chrome WebDriver") from exc
 
-        driver.get(self._base_url)
+        self._navigate_to(self._base_url, driver=driver)
+        needs_refresh = False
+        if self._storage_path and self._storage_path.exists():
+            if self._restore_storage(driver):
+                needs_refresh = True
         if self._cookie_jar and self._cookie_jar.exists():
             self._load_cookies(driver)
+            needs_refresh = True
+        if needs_refresh:
             driver.refresh()
         return driver
 
@@ -84,16 +93,77 @@ class LakeraAgent:
             except WebDriverException:
                 continue
 
+    def _restore_storage(self, driver: webdriver.Chrome) -> bool:
+        if not self._storage_path or not self._storage_path.exists():
+            return False
+        try:
+            snapshot = json.loads(self._storage_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        local_entries = snapshot.get("local") or {}
+        session_entries = snapshot.get("session") or {}
+        script = """
+            (function(ls, ss) {
+                if (ls && typeof ls === 'object') {
+                    Object.keys(ls).forEach(key => {
+                        try { localStorage.setItem(key, ls[key]); } catch (_) {}
+                    });
+                }
+                if (ss && typeof ss === 'object') {
+                    Object.keys(ss).forEach(key => {
+                        try { sessionStorage.setItem(key, ss[key]); } catch (_) {}
+                    });
+                }
+            })(arguments[0], arguments[1]);
+        """
+        try:
+            driver.execute_script(script, local_entries, session_entries)
+        except WebDriverException:
+            return False
+        return bool(local_entries or session_entries)
+
+    def _capture_storage(self) -> Optional[dict]:
+        script = """
+            const result = { local: {}, session: {} };
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                result.local[key] = localStorage.getItem(key);
+            }
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                result.session[key] = sessionStorage.getItem(key);
+            }
+            return result;
+        """
+        try:
+            snapshot = self._driver.execute_script(script)
+        except WebDriverException:
+            return None
+        return snapshot
+
     def save_cookies(self) -> None:
         if not self._cookie_jar:
             return
         cookies = self._driver.get_cookies()
         self._cookie_jar.parent.mkdir(parents=True, exist_ok=True)
-        self._cookie_jar.write_text(json.dumps(cookies))
+        self._cookie_jar.write_text(json.dumps(cookies), encoding="utf-8")
+
+    def save_storage(self) -> None:
+        if not self._storage_path:
+            return
+        snapshot = self._capture_storage()
+        if snapshot is None:
+            return
+        try:
+            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+            self._storage_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        except OSError:
+            pass
 
     def close(self, *, save_state: bool = True) -> None:
         if save_state:
             self.save_cookies()
+            self.save_storage()
         self._driver.quit()
 
     def __enter__(self) -> "LakeraAgent":
@@ -230,18 +300,74 @@ class LakeraAgent:
 
     def describe_level(self, purpose: Optional[str] = None) -> str:
         payload = {"purpose": purpose or "describe_level", "url": self._base_url}
-        try:
-            self._driver.get(self._base_url)
-            description = self._wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "p.description"))
-            )
-            text = description.text.strip()
-        except TimeoutException as exc:
-            error_message = "could not load level description"
-            self._log_event("describe_level", payload, error=error_message)
-            raise LakeraAgentError(error_message) from exc
+        self._navigate_to(self._base_url)
+        for attempt in (1, 2):
+            try:
+                self._prepare_level_page()
+                description = self._wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "p.description"))
+                )
+                text = description.text.strip()
+                break
+            except TimeoutException:
+                if attempt == 2:
+                    error_message = "could not load level description"
+                    self._log_event("describe_level", payload, error=error_message)
+                    raise LakeraAgentError(error_message)
+                self._driver.refresh()
+        else:
+            raise LakeraAgentError("unreachable describe_level state")
         self._log_event("describe_level", payload, response=text)
         return text
+
+    def _navigate_to(self, url: str, *, driver: Optional[webdriver.Chrome] = None) -> None:
+        target = driver or self._driver
+        if not target:
+            raise LakeraAgentError("WebDriver not available for navigation")
+        target.get(url)
+        if not self._page_load_stop_after:
+            return
+        try:
+            WebDriverWait(target, self._page_load_stop_after).until(
+                lambda drv: drv.execute_script("return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            self._stop_page_load(driver=target)
+
+    def _stop_page_load(self, *, driver: Optional[webdriver.Chrome] = None) -> None:
+        target = driver or self._driver
+        if not target:
+            return
+        try:
+            target.execute_script("window.stop();")
+        except WebDriverException:
+            pass
+
+    def _prepare_level_page(self) -> None:
+        # Some levels show custom alert overlays (e.g., "Next level" buttons) that block the DOM
+        # after cookies resume a session. Click through them automatically so waits do not hang.
+        keywords = ("next level", "continue", "start", "resume", "play")
+        for _ in range(3):
+            if not self._click_custom_alert_button(keywords):
+                break
+
+    def _click_custom_alert_button(self, keywords: Iterable[str]) -> bool:
+        try:
+            alert = self._driver.find_element(By.CSS_SELECTOR, "div.customAlert")
+        except NoSuchElementException:
+            return False
+
+        buttons = alert.find_elements(By.TAG_NAME, "button")
+        for button in buttons:
+            label = button.text.strip().lower()
+            if any(keyword in label for keyword in keywords):
+                try:
+                    button.click()
+                    self._wait.until(EC.staleness_of(alert))
+                except (WebDriverException, TimeoutException):
+                    pass
+                return True
+        return False
 
     def submit_prompt(self, prompt: str, purpose: Optional[str] = None) -> str:
         if not prompt.strip():

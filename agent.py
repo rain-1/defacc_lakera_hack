@@ -84,6 +84,7 @@ class GandalfAutoAgent:
         history_limit: int = 20,
         guidance: Optional[str] = None,
         lakera_kwargs: Optional[Dict[str, object]] = None,
+        latest_url_path: Optional[Path] = None,
     ) -> None:
         self._renderer = PromptRenderer(template_path)
         self._guidance = guidance
@@ -107,6 +108,7 @@ class GandalfAutoAgent:
             self._http.headers["HTTP-Referer"] = referer_header
         if title_header:
             self._http.headers["X-Title"] = title_header
+        self._latest_url_path = latest_url_path
 
     def run(self, *, max_rounds: int = 10) -> None:
         LOG.info("Starting GandalfAutoAgent run; max_rounds=%d", max_rounds)
@@ -210,6 +212,7 @@ class GandalfAutoAgent:
         self._append_turn("lakera", response)
         if lakera.last_next_level_url:
             self._logger.log("next_level", url=lakera.last_next_level_url)
+            self._persist_latest_url(lakera.last_next_level_url)
             return True
         return False
 
@@ -218,6 +221,16 @@ class GandalfAutoAgent:
         if self._history_limit and len(self._turns) > self._history_limit:
             self._turns = self._turns[-self._history_limit :]
 
+    def _persist_latest_url(self, url: str) -> None:
+        if not self._latest_url_path:
+            return
+        try:
+            self._latest_url_path.parent.mkdir(parents=True, exist_ok=True)
+            self._latest_url_path.write_text(url, encoding="utf-8")
+            LOG.info("Saved next level URL to %s", self._latest_url_path)
+        except OSError as exc:
+            LOG.warning("Failed to write latest level URL: %s", exc)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Autonomous Lakera Gandalf agent")
@@ -225,6 +238,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True, help="Run Chrome in headless mode")
     parser.add_argument("--template", type=Path, default=Path("prompts/main.txt"), help="Path to the Jinja prompt template")
     parser.add_argument("--transcript-dir", type=Path, default=Path("."), help="Directory where transcript-[date].jsonl is stored")
+    parser.add_argument(
+        "--lakera-url",
+        default=os.getenv("LAKERA_URL", "https://gandalf.lakera.ai/baseline"),
+        help="Lakera Gandalf level URL to target (defaults to LAKERA_URL or baseline)",
+    )
+    parser.add_argument(
+        "--page-load-stop-after",
+        type=float,
+        default=float(os.getenv("LAKERA_PAGE_STOP", "5")),
+        help="Seconds to wait before forcibly stopping page load (0 disables)",
+    )
+    parser.add_argument(
+        "--latest-url-path",
+        type=Path,
+        default=Path(os.getenv("LAKERA_LATEST_URL", "latest-level.url")),
+        help="File path where the newest level URL should be written",
+    )
+    parser.add_argument(
+        "--storage-path",
+        type=Path,
+        default=Path(os.getenv("LAKERA_STORAGE", "lakera-storage.json")),
+        help="Path for persisting Lakera local/session storage",
+    )
     parser.add_argument(
         "--openrouter-model",
         default=os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
@@ -257,6 +293,9 @@ def main() -> None:
     lakera_kwargs = {
         "cookie_jar": args.cookie_jar,
         "headless": args.headless,
+        "base_url": args.lakera_url,
+        "page_load_stop_after": max(0.0, args.page_load_stop_after),
+        "storage_path": args.storage_path,
     }
     agent = GandalfAutoAgent(
         template_path=args.template,
@@ -269,6 +308,7 @@ def main() -> None:
         history_limit=args.history_limit,
         http_timeout=args.http_timeout,
         lakera_kwargs=lakera_kwargs,
+        latest_url_path=args.latest_url_path,
     )
     try:
         agent.run(max_rounds=args.max_rounds)
